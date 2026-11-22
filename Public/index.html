@@ -1,0 +1,102 @@
+
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NOVA AI</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#090812;color:white;font-family:Arial,sans-serif}
+header{padding:20px;text-align:center;background:#151126;border-bottom:1px solid #493477}
+.logo{font-size:32px;font-weight:bold;color:#bd8cff}
+main{max-width:650px;margin:25px auto;padding:15px}
+.card{background:#171426;padding:20px;border:1px solid #45316b;border-radius:16px;margin-bottom:15px}
+input,button{width:100%;padding:14px;margin:7px 0;border-radius:9px;border:0}
+input{background:#29243b;color:white}
+button{background:#9255df;color:white;font-weight:bold}
+button:active{opacity:.8}
+#chat{display:none}
+#messages{height:300px;overflow:auto;padding:10px;background:#0e0c17;border-radius:10px}
+.msg{padding:12px;margin:8px 0;border-radius:10px;background:#29243b;white-space:pre-wrap;overflow-wrap:anywhere}
+.user{background:#49316b}
+small{color:#b8a7d1}
+</style>
+</head>
+<body>
+<header>
+<div class="logo">✦ NOVA AI</div>
+<small>Tu inteligencia artificial personal</small>
+</header>
+<main>
+<section class="card" id="auth">
+<h2>Bienvenido a Nova</h2>
+<input id="email" type="email" placeholder="Tu correo">
+<input id="password" type="password" placeholder="Contraseña (mínimo 8 caracteres)">
+<button onclick="login()">Iniciar sesión</button>
+<button onclick="register()">Crear cuenta</button>
+<p id="status"></p>
+</section>
+<section class="card" id="chat">
+<h2>✦ Habla con Nova</h2>
+<div id="messages"></div>
+<input id="question" placeholder="Escribe tu mensaje..." onkeydown="if(event.key==='Enter')send()">
+<button onclick="send()">Enviar mensaje</button>
+<button onclick="logout()">Cerrar sesión</button>
+</section>
+</main>
+<script>
+let token=localStorage.getItem("nova_token");
+const $=id=>document.getElementById(id);
+async function api(url,body){
+ const r=await fetch(url,{
+ method:"POST",
+ headers:{"Content-Type":"application/json",
+ ...(token?{"Authorization":"Bearer "+token}:{})},
+ body:JSON.stringify(body)
+ });
+ const d=await r.json();
+ if(!r.ok)throw Error(d.error||"Error");
+ return d;
+}
+function showChat(){
+ $("auth").style.display="none";
+ $("chat").style.display="block";
+}
+if(token)showChat();
+async function login(){
+ try{
+ const d=await api("/api/login",{email:$("email").value,password:$("password").value});
+ token=d.token;localStorage.setItem("nova_token",token);showChat();
+ }catch(e){$("status").textContent=e.message}
+}
+async function register(){
+ try{
+ const d=await api("/api/register",{email:$("email").value,password:$("password").value});
+ token=d.token;localStorage.setItem("nova_token",token);showChat();
+ }catch(e){$("status").textContent=e.message}
+}
+function addMessage(text,who){
+ const el=document.createElement("div");
+ el.className="msg "+who;el.textContent=text;
+ $("messages").appendChild(el);
+ $("messages").scrollTop=$("messages").scrollHeight;
+}
+async function send(){
+ const q=$("question").value.trim();
+ if(!q)return;
+ $("question").value="";
+ addMessage(q,"user");
+ try{
+ const d=await api("/api/chat",{messages:[{role:"user",content:q}]});
+ addMessage(d.reply,"");
+ }catch(e){addMessage(e.message,"")}
+}
+function logout(){
+ localStorage.removeItem("nova_token");token=null;
+ $("chat").style.display="none";$("auth").style.display="block";
+}
+</script>
+</body>
+</html>
+  
