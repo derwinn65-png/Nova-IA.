@@ -11,9 +11,9 @@ const db = new Database("nova.sqlite");
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET;
 app.use(express.json({ limit: "1mb" }));
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, "Public")));
 app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+  res.sendFile(path.join(__dirname, "Public", "index.html"));
 });
 
 if (!JWT_SECRET) console.warn("Configura JWT_SECRET en .env antes de publicar.");
