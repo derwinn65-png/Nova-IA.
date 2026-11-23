@@ -1,52 +1,33 @@
-const express = require("express");
-const path = require("path");
-const { GoogleGenAI } = require("@google/genai");
-
-const app = express();
-const PORT = process.env.PORT || 3000;
-app.use(express.json({ limit: "2mb" }));
-app.use(express.static(path.join(__dirname, "Public")));
-
-const apiKey = process.env.GEMINI_API_KEY;
-const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
-
-app.get("/api/status", (_req, res) => {
-  res.json({ configured: Boolean(ai) });
-});
-
-app.post("/api/chat", async (req, res) => {
-  try {
-    if (!ai) return res.status(503).json({ error: "Gemini no está configurado en Render." });
-    const { message, history = [] } = req.body || {};
-    if (typeof message !== "string" || !message.trim()) {
-      return res.status(400).json({ error: "Escribe un mensaje." });
-    }
-    const safeHistory = Array.isArray(history) ? history.slice(-20) : [];
-    const contents = safeHistory
-      .filter(x => x && typeof x.text === "string")
-      .map(x => ({
-        role: x.role === "model" ? "model" : "user",
-        parts: [{ text: x.text.slice(0, 12000) }]
-      }));
-    contents.push({ role: "user", parts: [{ text: message.trim().slice(0, 12000) }] });
-
-    const result = await ai.models.generateContent({
-      model,
-      contents,
-      config: {
-        systemInstruction: "Eres Nova AI, un asistente inteligente, creativo y útil. Responde en español cuando el usuario escriba en español."
-      }
-    });
-    res.json({ reply: result.text || "No pude generar una respuesta." });
-  } catch (err) {
-    console.error("Gemini request failed:", err);
-    res.status(500).json({ error: "Error al consultar Gemini. Revisa la configuración y los registros de Render." });
-  }
-});
-
-app.get(/.*/, (_req, res) => {
-  res.sendFile(path.join(__dirname, "Public", "index.html"));
-});
-
-app.listen(PORT, () => console.log(`Nova AI web server listening on ${PORT}`));
+const express=require("express"),path=require("path"),fs=require("fs"),crypto=require("crypto"),bcrypt=require("bcryptjs"),jwt=require("jsonwebtoken"),multer=require("multer");
+const {GoogleGenAI}=require("@google/genai");
+const app=express(),PORT=process.env.PORT||3000,DATA=process.env.DATA_DIR||"/var/data",UPLOAD=path.join(DATA,"uploads"),DB=path.join(DATA,"nova.json");
+fs.mkdirSync(UPLOAD,{recursive:true});
+app.use(express.json({limit:"25mb"}));app.use(express.static(path.join(__dirname,"Public")));
+const ai=process.env.GEMINI_API_KEY?new GoogleGenAI({apiKey:process.env.GEMINI_API_KEY}):null,MODEL=process.env.GEMINI_MODEL||"gemini-2.5-flash";
+const id=()=>crypto.randomUUID(),today=()=>new Date().toISOString().slice(0,10);
+const read=()=>{try{return JSON.parse(fs.readFileSync(DB,"utf8"))}catch{return{users:[],chats:[],files:[]}}},write=d=>fs.writeFileSync(DB,JSON.stringify(d));
+const safe=u=>({id:u.id,email:u.email,role:u.role,daily_limit:u.dailyLimit,used_today:u.usageDate===today()?u.usedToday:0});
+function auth(req,res,next){try{if(!process.env.JWT_SECRET)throw 0;req.user=jwt.verify((req.headers.authorization||"").replace(/^Bearer\s+/i,""),process.env.JWT_SECRET);next()}catch{return res.status(401).json({error:"Inicia sesión para continuar."})}}
+function admin(req,res,next){if(req.user.role!=="admin")return res.status(403).json({error:"Solo administrador."});next()}
+function token(u){return jwt.sign({id:u.id,email:u.email,role:u.role},process.env.JWT_SECRET,{expiresIn:"30d"})}
+function bootstrap(){let email=(process.env.ADMIN_EMAIL||"").trim().toLowerCase(),pw=process.env.ADMIN_PASSWORD||"";if(!email||!pw)return;let d=read(),u=d.users.find(x=>x.email===email);if(!u)d.users.push({id:id(),email,passwordHash:bcrypt.hashSync(pw,12),role:"admin",dailyLimit:10000,usedToday:0,usageDate:today()});else u.role="admin";write(d)}bootstrap();
+const storage=multer.diskStorage({destination:(_r,_f,cb)=>cb(null,UPLOAD),filename:(_r,f,cb)=>cb(null,id()+path.extname(f.originalname).slice(0,10))});
+const upload=multer({storage,limits:{fileSize:15*1024*1024,files:1}});
+function saveFile(file,u,kind="upload"){let f={id:id(),ownerId:u.id,ownerEmail:u.email,originalName:path.basename(file.originalname).slice(0,180),storedName:file.filename,mimeType:file.mimetype||"application/octet-stream",size:file.size,kind,createdAt:new Date().toISOString()};let d=read();d.files.push(f);write(d);return f}
+app.get("/api/status",(_q,s)=>s.json({configured:!!ai,model:MODEL}));
+app.post("/api/register",async(q,s)=>{try{let email=String(q.body.email||"").trim().toLowerCase(),pw=String(q.body.password||"");if(!process.env.JWT_SECRET)return s.status(500).json({error:"Falta JWT_SECRET."});if(!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email))return s.status(400).json({error:"Correo no válido."});if(pw.length<8)return s.status(400).json({error:"Usa al menos 8 caracteres."});let d=read();if(d.users.some(u=>u.email===email))return s.status(409).json({error:"Ese correo ya tiene cuenta."});let u={id:id(),email,passwordHash:await bcrypt.hash(pw,12),role:"user",dailyLimit:30,usedToday:0,usageDate:today()};d.users.push(u);write(d);s.json({token:token(u),user:safe(u)})}catch(e){console.error(e);s.status(500).json({error:"No se pudo registrar."})}});
+app.post("/api/login",async(q,s)=>{let d=read(),u=d.users.find(x=>x.email===String(q.body.email||"").toLowerCase());if(!u||!await bcrypt.compare(String(q.body.password||""),u.passwordHash))return s.status(401).json({error:"Correo o contraseña incorrectos."});s.json({token:token(u),user:safe(u)})});
+app.get("/api/me",auth,(q,s)=>{let u=read().users.find(x=>x.id===q.user.id);if(!u)return s.status(401).json({error:"Cuenta no encontrada."});s.json(safe(u))});
+app.get("/api/chats",auth,(q,s)=>s.json(read().chats.filter(c=>c.userId===q.user.id).sort((a,b)=>b.updatedAt.localeCompare(a.updatedAt)).map(c=>({id:c.id,title:c.title,updatedAt:c.updatedAt}))));
+app.post("/api/chats",auth,(q,s)=>{let d=read(),c={id:id(),userId:q.user.id,title:"Nueva conversación",messages:[],updatedAt:new Date().toISOString()};d.chats.push(c);write(d);s.json({id:c.id})});
+app.get("/api/chats/:id/messages",auth,(q,s)=>{let c=read().chats.find(c=>c.id===q.params.id&&c.userId===q.user.id);if(!c)return s.status(404).json({error:"Chat no encontrado."});s.json(c.messages)});
+app.post("/api/upload",auth,upload.single("file"),(q,s)=>{if(!q.file)return s.status(400).json({error:"Selecciona un archivo."});let f=saveFile(q.file,q.user);s.json({file:{id:f.id,originalName:f.originalName,mimeType:f.mimeType,size:f.size}})});
+app.post("/api/chat",auth,async(q,s)=>{try{if(!ai)return s.status(503).json({error:"Configura GEMINI_API_KEY en Render."});let d=read(),u=d.users.find(x=>x.id===q.user.id),c=d.chats.find(x=>x.id===q.body.chatId&&x.userId===q.user.id),msg=String(q.body.message||"").trim();if(!c)return s.status(404).json({error:"Chat no encontrado."});if(u.usageDate!==today()){u.usageDate=today();u.usedToday=0}if(u.usedToday>=u.dailyLimit)return s.status(429).json({error:"Límite diario alcanzado."});let parts=[];if(msg)parts.push({text:msg});for(let fid of (q.body.attachmentIds||[]).slice(0,8)){let f=d.files.find(x=>x.id===fid&&x.ownerId===q.user.id),p=f&&path.join(UPLOAD,f.storedName);if(!f||!fs.existsSync(p))continue;if(f.mimeType.startsWith("image/")&&fs.statSync(p).size<10*1024*1024)parts.push({inlineData:{mimeType:f.mimeType,data:fs.readFileSync(p).toString("base64")}});else parts.push({text:"Archivo adjunto almacenado: "+f.originalName+" ("+f.mimeType+")."});}if(!parts.length)return s.status(400).json({error:"Escribe un mensaje o adjunta una imagen."});let contents=c.messages.slice(-20).map(m=>({role:m.role==="assistant"?"model":"user",parts:[{text:m.content}]}));contents.push({role:"user",parts});let result=await ai.models.generateContent({model:MODEL,contents,config:{systemInstruction:"Eres Nova AI, un asistente experto y creativo. Responde en español si el usuario escribe en español. Ayuda con programación, páginas web, archivos y videojuegos. No inventes archivos ni acciones que no hayas realizado."}});let reply=result.text||"No pude generar respuesta.";c.messages.push({role:"user",content:msg||"Archivo adjunto"},{role:"assistant",content:reply});if(c.title==="Nueva conversación"&&msg)c.title=msg.slice(0,45);c.updatedAt=new Date().toISOString();u.usedToday++;write(d);s.json({reply})}catch(e){console.error(e);s.status(500).json({error:"Error al consultar Gemini. Comprueba API Key, modelo y cuota."})}});
+app.post("/api/generate",auth,async(q,s)=>{try{if(!ai)return s.status(503).json({error:"Falta GEMINI_API_KEY."});let d=read(),c=d.chats.find(x=>x.id===q.body.chatId&&x.userId===q.user.id);if(!c)return s.status(404).json({error:"Chat no encontrado."});let kind=String(q.body.kind||"file"),prompt=String(q.body.prompt||"");let r=await ai.models.generateContent({model:MODEL,contents:`Devuelve el contenido completo de un archivo de tipo ${kind}. Sin explicaciones externas. Solicitud: ${prompt}`});let content=r.text||"",ext=kind==="web"?"html":"txt",name=`nova-${kind}-${Date.now()}.${ext}`,stored=id()+"."+ext;fs.writeFileSync(path.join(UPLOAD,stored),content);let f={id:id(),ownerId:q.user.id,ownerEmail:q.user.email,originalName:name,storedName:stored,mimeType:"text/plain",size:Buffer.byteLength(content),kind:"generated",createdAt:new Date().toISOString()};d.files.push(f);c.messages.push({role:"user",content:prompt},{role:"assistant",content:"Archivo creado: "+name});c.updatedAt=new Date().toISOString();write(d);s.json({content,filename:name,downloadUrl:"/api/files/"+f.id+"/download"})}catch(e){console.error(e);s.status(500).json({error:"No se pudo crear el archivo."})}});
+app.get("/api/files/:id/download",auth,(q,s)=>{let f=read().files.find(x=>x.id===q.params.id);if(!f||(q.user.role!=="admin"&&f.ownerId!==q.user.id))return s.status(404).json({error:"Archivo no encontrado."});s.download(path.join(UPLOAD,f.storedName),f.originalName)});
+app.get("/api/admin/users",auth,admin,(_q,s)=>s.json(read().users.map(safe)));
+app.patch("/api/admin/users/:id",auth,admin,(q,s)=>{let d=read(),u=d.users.find(x=>x.id===q.params.id),n=Number(q.body.daily_limit);if(!u)return s.status(404).json({error:"Usuario no encontrado."});if(!Number.isInteger(n)||n<0||n>10000)return s.status(400).json({error:"Límite inválido."});u.dailyLimit=n;write(d);s.json(safe(u))});
+app.get("/api/admin/files",auth,admin,(_q,s)=>s.json(read().files.sort((a,b)=>b.createdAt.localeCompare(a.createdAt)).map(f=>({id:f.id,originalName:f.originalName,ownerEmail:f.ownerEmail,mimeType:f.mimeType,size:f.size,kind:f.kind,createdAt:f.createdAt}))));
+app.get("/api/admin/files/:id/download",auth,admin,(q,s)=>{let f=read().files.find(x=>x.id===q.params.id);if(!f)return s.status(404).json({error:"No existe."});s.download(path.join(UPLOAD,f.storedName),f.originalName)});
+app.get(/.*/,(q,s)=>s.sendFile(path.join(__dirname,"Public","index.html")));
+app.listen(PORT,()=>console.log("Nova AI en puerto "+PORT));
