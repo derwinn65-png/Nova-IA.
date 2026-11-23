@@ -5,7 +5,7 @@ const { GoogleGenAI } = require("@google/genai");
 const app = express();
 const PORT = process.env.PORT || 3000;
 app.use(express.json({ limit: "2mb" }));
-app.use(express.static(path.join(__dirname, "public")));
+app.use(express.static(path.join(__dirname, "Public")));
 
 const apiKey = process.env.GEMINI_API_KEY;
 const model = process.env.GEMINI_MODEL || "gemini-2.5-flash";
@@ -45,8 +45,8 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-app.get("*", (_req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+app.get(/.*/, (_req, res) => {
+  res.sendFile(path.join(__dirname, "Public", "index.html"));
 });
 
 app.listen(PORT, () => console.log(`Nova AI web server listening on ${PORT}`));
