@@ -1,6 +1,6 @@
 {
   "name": "nova-ai-web",
-  "version": "2.1.0",
+  "version": "2.0.0",
   "private": true,
   "scripts": {
     "start": "node server.js"
@@ -11,5 +11,8 @@
     "express": "^5.1.0",
     "jsonwebtoken": "^9.0.2",
     "multer": "^1.4.5-lts.2"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }
