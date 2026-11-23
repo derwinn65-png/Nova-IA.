@@ -11,40 +11,47 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 10000;
+const PORT = Number(process.env.PORT) || 10000;
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-4.1-mini";
 
 if (!JWT_SECRET) {
-  console.error("Falta configurar JWT_SECRET en Render.");
+  console.error("ERROR: Configura JWT_SECRET en Render.");
   process.exit(1);
 }
 
 app.use(express.json({ limit: "1mb" }));
 
-// ARCHIVOS DE NOVA
+// ==================================
+// NOVA: CARGAR LA PÁGINA PRINCIPAL
+// ==================================
+
 const publicDir = path.join(__dirname, "Public");
 const indexFile = path.join(publicDir, "index.html");
 
+console.log("🔥 NOVA VERSION NUEVA 2026");
+console.log("Directorio del servidor:", __dirname);
 console.log("Carpeta Public:", fs.existsSync(publicDir));
 console.log("index.html encontrado:", fs.existsSync(indexFile));
 
 app.use(express.static(publicDir));
 
 app.get("/", (req, res) => {
-  res.sendFile(indexFile, (error) => {
-    if (error) {
-      console.error("No se pudo cargar index.html:", error);
-      if (!res.headersSent) {
-        res.status(500).send("No se encontró Public/index.html");
-      }
-    }
-  });
+  if (!fs.existsSync(indexFile)) {
+    return res.status(404).send(
+      "Nova: No se encontró Public/index.html. Comprueba el nombre de la carpeta y del archivo."
+    );
+  }
+
+  res.sendFile(indexFile);
 });
 
+// ==================================
 // BASE DE DATOS
+// ==================================
+
 const db = new Database(
   process.env.DB_PATH || path.join(__dirname, "nova.db")
 );
@@ -56,7 +63,7 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     email TEXT UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
-    role TEXT DEFAULT 'user',
+    role TEXT NOT NULL DEFAULT 'user',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -67,13 +74,16 @@ db.exec(`
   );
 `);
 
-// CREAR ADMINISTRADOR INICIAL
+// ==================================
+// ADMINISTRADOR INICIAL
+// ==================================
+
 async function createAdmin() {
   const email = process.env.ADMIN_EMAIL?.trim().toLowerCase();
   const password = process.env.ADMIN_PASSWORD;
 
   if (!email || !password) {
-    console.log("ADMIN_EMAIL o ADMIN_PASSWORD no configurados.");
+    console.log("Administrador inicial no configurado.");
     return;
   }
 
@@ -81,25 +91,30 @@ async function createAdmin() {
     .prepare("SELECT id FROM users WHERE email = ?")
     .get(email);
 
-  if (!existing) {
-    const hash = await bcrypt.hash(password, 12);
+  if (existing) {
+    db.prepare(
+      "UPDATE users SET role = 'admin' WHERE email = ?"
+    ).run(email);
 
-    db.prepare(`
-      INSERT INTO users (email, password_hash, role)
-      VALUES (?, ?, 'admin')
-    `).run(email, hash);
-
-    console.log("Administrador inicial creado.");
-  } else {
-    db.prepare("UPDATE users SET role = 'admin' WHERE email = ?")
-      .run(email);
-
-    console.log("Administrador existente reconocido.");
+    console.log("Administrador reconocido.");
+    return;
   }
+
+  const passwordHash = await bcrypt.hash(password, 12);
+
+  db.prepare(`
+    INSERT INTO users (email, password_hash, role)
+    VALUES (?, ?, 'admin')
+  `).run(email, passwordHash);
+
+  console.log("Administrador creado.");
 }
 
+// ==================================
 // AUTENTICACIÓN
-function createToken(user) {
+// ==================================
+
+function generateToken(user) {
   return jwt.sign(
     {
       id: user.id,
@@ -112,29 +127,27 @@ function createToken(user) {
 }
 
 function authenticate(req, res, next) {
-  const header = req.headers.authorization || "";
-  const token = header.startsWith("Bearer ")
-    ? header.slice(7)
-    : null;
+  const authorization = req.headers.authorization || "";
 
-  if (!token) {
+  if (!authorization.startsWith("Bearer ")) {
     return res.status(401).json({
-      error: "Inicia sesión para continuar."
+      error: "Debes iniciar sesión."
     });
   }
 
   try {
+    const token = authorization.slice(7);
     req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch {
-    return res.status(401).json({
-      error: "Sesión inválida o expirada."
+    res.status(401).json({
+      error: "Tu sesión ha expirado."
     });
   }
 }
 
 function requireAdmin(req, res, next) {
-  if (req.user?.role !== "admin") {
+  if (req.user.role !== "admin") {
     return res.status(403).json({
       error: "Acceso exclusivo para administradores."
     });
@@ -143,14 +156,22 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+// ==================================
 // REGISTRO
+// ==================================
+
 app.post("/api/register", async (req, res) => {
   try {
-    const email = String(req.body.email || "").trim().toLowerCase();
+    const email = String(req.body.email || "")
+      .trim()
+      .toLowerCase();
+
     const password = String(req.body.password || "");
 
-    if (!email || !email.includes("@")) {
-      return res.status(400).json({ error: "Correo inválido." });
+    if (!email.includes("@")) {
+      return res.status(400).json({
+        error: "Correo electrónico inválido."
+      });
     }
 
     if (password.length < 6) {
@@ -165,7 +186,7 @@ app.post("/api/register", async (req, res) => {
 
     if (existing) {
       return res.status(409).json({
-        error: "Ese correo ya está registrado."
+        error: "Este correo ya está registrado."
       });
     }
 
@@ -183,20 +204,28 @@ app.post("/api/register", async (req, res) => {
     };
 
     res.status(201).json({
-      message: "Cuenta creada correctamente.",
-      token: createToken(user),
+      message: "Cuenta creada.",
+      token: generateToken(user),
       user
     });
   } catch (error) {
-    console.error("Error en registro:", error);
-    res.status(500).json({ error: "No se pudo crear la cuenta." });
+    console.error("Registro:", error);
+    res.status(500).json({
+      error: "No se pudo crear la cuenta."
+    });
   }
 });
 
+// ==================================
 // INICIO DE SESIÓN
+// ==================================
+
 app.post("/api/login", async (req, res) => {
   try {
-    const email = String(req.body.email || "").trim().toLowerCase();
+    const email = String(req.body.email || "")
+      .trim()
+      .toLowerCase();
+
     const password = String(req.body.password || "");
 
     const user = db
@@ -216,17 +245,22 @@ app.post("/api/login", async (req, res) => {
     };
 
     res.json({
-      message: "Sesión iniciada.",
-      token: createToken(safeUser),
+      message: "Bienvenido a Nova.",
+      token: generateToken(safeUser),
       user: safeUser
     });
   } catch (error) {
-    console.error("Error en login:", error);
-    res.status(500).json({ error: "Error al iniciar sesión." });
+    console.error("Login:", error);
+    res.status(500).json({
+      error: "No se pudo iniciar sesión."
+    });
   }
 });
 
-// USUARIO ACTUAL
+// ==================================
+// PERFIL DEL USUARIO
+// ==================================
+
 app.get("/api/me", authenticate, (req, res) => {
   const user = db.prepare(`
     SELECT id, email, role, created_at
@@ -235,13 +269,18 @@ app.get("/api/me", authenticate, (req, res) => {
   `).get(req.user.id);
 
   if (!user) {
-    return res.status(404).json({ error: "Usuario no encontrado." });
+    return res.status(404).json({
+      error: "Usuario no encontrado."
+    });
   }
 
   res.json({ user });
 });
 
-// CHAT CON NOVA
+// ==================================
+// CHAT DE NOVA CON OPENAI
+// ==================================
+
 app.post("/api/chat", authenticate, async (req, res) => {
   try {
     const message = String(req.body.message || "").trim();
@@ -264,7 +303,7 @@ app.post("/api/chat", authenticate, async (req, res) => {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Authorization": `Bearer ${OPENAI_API_KEY}`
+          Authorization: `Bearer ${OPENAI_API_KEY}`
         },
         body: JSON.stringify({
           model: OPENAI_MODEL,
@@ -272,7 +311,7 @@ app.post("/api/chat", authenticate, async (req, res) => {
             {
               role: "system",
               content:
-                "Eres Nova, una inteligencia artificial útil, creativa y experta en programación, videojuegos, HTML y tecnología. Responde en el idioma del usuario."
+                "Eres Nova, una inteligencia artificial experta en programación, creación de videojuegos, HTML y tecnología. Ayuda al usuario de forma clara y en su idioma."
             },
             {
               role: "user",
@@ -286,73 +325,106 @@ app.post("/api/chat", authenticate, async (req, res) => {
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("Error de OpenAI:", data);
+      console.error("OpenAI:", data);
       return res.status(response.status).json({
-        error: data.error?.message || "Error al comunicarse con la IA."
+        error: data.error?.message || "Error de inteligencia artificial."
       });
     }
 
     res.json({
-      reply: data.choices?.[0]?.message?.content || "No recibí una respuesta."
+      reply: data.choices?.[0]?.message?.content || "Sin respuesta."
     });
   } catch (error) {
-    console.error("Error en chat:", error);
-    res.status(500).json({ error: "Error interno del chat." });
+    console.error("Chat:", error);
+    res.status(500).json({
+      error: "Error interno del chat."
+    });
   }
 });
 
-// LISTA DE USUARIOS PARA ADMIN
-app.get("/api/admin/users", authenticate, requireAdmin, (req, res) => {
-  const users = db.prepare(`
-    SELECT id, email, role, created_at
-    FROM users
-    ORDER BY id DESC
-  `).all();
+// ==================================
+// PANEL ADMINISTRADOR
+// ==================================
 
-  res.json({ users });
-});
+app.get(
+  "/api/admin/users",
+  authenticate,
+  requireAdmin,
+  (req, res) => {
+    const users = db.prepare(`
+      SELECT id, email, role, created_at
+      FROM users
+      ORDER BY id DESC
+    `).all();
 
-// MODIFICAR USUARIO
-app.patch("/api/admin/users/:id", authenticate, requireAdmin, (req, res) => {
-  const id = Number(req.params.id);
-  const { role } = req.body;
-
-  if (!Number.isInteger(id) || id < 1) {
-    return res.status(400).json({ error: "ID inválido." });
+    res.json({ users });
   }
+);
 
-  if (!["user", "admin"].includes(role)) {
-    return res.status(400).json({ error: "Rol inválido." });
+app.patch(
+  "/api/admin/users/:id",
+  authenticate,
+  requireAdmin,
+  (req, res) => {
+    const id = Number(req.params.id);
+    const role = req.body.role;
+
+    if (!Number.isInteger(id) || id < 1) {
+      return res.status(400).json({
+        error: "ID inválido."
+      });
+    }
+
+    if (!["user", "admin"].includes(role)) {
+      return res.status(400).json({
+        error: "Rol inválido."
+      });
+    }
+
+    const result = db.prepare(`
+      UPDATE users SET role = ? WHERE id = ?
+    `).run(role, id);
+
+    if (!result.changes) {
+      return res.status(404).json({
+        error: "Usuario no encontrado."
+      });
+    }
+
+    res.json({
+      message: "Usuario actualizado."
+    });
   }
+);
 
-  const result = db.prepare(`
-    UPDATE users SET role = ? WHERE id = ?
-  `).run(role, id);
+// ==================================
+// ANUNCIOS
+// ==================================
 
-  if (!result.changes) {
-    return res.status(404).json({ error: "Usuario no encontrado." });
+app.post(
+  "/api/admin/announcement",
+  authenticate,
+  requireAdmin,
+  (req, res) => {
+    const message = String(req.body.message || "").trim();
+
+    if (!message) {
+      return res.status(400).json({
+        error: "El anuncio está vacío."
+      });
+    }
+
+    db.prepare(`
+      INSERT INTO announcements (message)
+      VALUES (?)
+    `).run(message);
+
+    res.json({
+      message: "Anuncio publicado."
+    });
   }
+);
 
-  res.json({ message: "Usuario actualizado." });
-});
-
-// PUBLICAR ANUNCIO
-app.post("/api/admin/announcement", authenticate, requireAdmin, (req, res) => {
-  const message = String(req.body.message || "").trim();
-
-  if (!message) {
-    return res.status(400).json({ error: "El anuncio está vacío." });
-  }
-
-  db.prepare(`
-    INSERT INTO announcements (message)
-    VALUES (?)
-  `).run(message);
-
-  res.json({ message: "Anuncio publicado." });
-});
-
-// CONSULTAR ANUNCIOS
 app.get("/api/announcements", (req, res) => {
   const announcements = db.prepare(`
     SELECT id, message, created_at
@@ -364,23 +436,48 @@ app.get("/api/announcements", (req, res) => {
   res.json({ announcements });
 });
 
-// COMPROBAR SERVIDOR
+// ==================================
+// COMPROBAR QUE NOVA ESTÁ FUNCIONANDO
+// ==================================
+
 app.get("/api/health", (req, res) => {
   res.json({
     status: "online",
-    name: "Nova AI"
+    name: "Nova AI",
+    version: "2026"
   });
 });
 
-// INICIAR SERVIDOR
-createAdmin()
-  .then(() => {
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Nova AI funcionando en el puerto ${PORT}`);
-      console.log(`Página principal: ${indexFile}`);
-    });
-  })
-  .catch((error) => {
-    console.error("No se pudo iniciar Nova:", error);
-    process.exit(1);
+// ==================================
+// RUTAS NO ENCONTRADAS
+// ==================================
+
+app.use((req, res) => {
+  res.status(404).json({
+    error: "Ruta no encontrada.",
+    path: req.path
   });
+});
+
+// ==================================
+// INICIAR NOVA
+// ==================================
+
+async function startServer() {
+  try {
+    await createAdmin();
+
+    app.listen(PORT, "0.0.0.0", () => {
+      console.log("🔥 NOVA VERSION NUEVA 2026");
+      console.log("Nova funcionando en puerto:", PORT);
+      console.log("Carpeta Public:", fs.existsSync(publicDir));
+      console.log("index.html:", fs.existsSync(indexFile));
+    });
+  } catch (error) {
+    console.error("Error iniciando Nova:", error);
+    process.exit(1);
+  }
+}
+
+startServer();
+      
